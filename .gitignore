@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.coverage
+htmlcov/
+coverage.xml
+*.blend1
+*.zip
