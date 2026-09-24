@@ -69,7 +69,8 @@ class REDUX_PT_tools(ReduxViewPanel, bpy.types.Panel):
         for operator, label in (
                 (static_ops.REDUX_OT_export_static, "Static"),
                 (mesh_ops.REDUX_OT_export_mesh, "Skin Mesh"),
-                (skeleton_ops.REDUX_OT_export_skeleton, "Skeleton")):
+                (skeleton_ops.REDUX_OT_export_skeleton, "Skeleton"),
+                (motion_ops.REDUX_OT_export_m2, "Motion")):
             column.operator(operator.bl_idname, text=label)
 
 

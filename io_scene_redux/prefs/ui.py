@@ -10,7 +10,7 @@ def draw(layout, prefs):
         column.prop(prefs, "compact_menus")
         for name in ("static", "mesh", "skeleton", "m2", "model"):
             column.prop(prefs, "enable_%s_import" % name)
-        for name in ("static", "mesh", "skeleton"):
+        for name in ("static", "mesh", "skeleton", "m2"):
             column.prop(prefs, "enable_%s_export" % name)
     else:
         column.prop(prefs, "load_textures")

@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -8,6 +9,7 @@ from ..skeleton.imp import _load_matching_skeleton, _skeleton_key_for_motion
 
 def _import_m2(context, path, data):
     clip = motion.read_m2(data)
+    source_chunks = binary.chunks(data)
     skeleton_key = _skeleton_key_for_motion(context, path, clip.bones_crc)
     armature = _active_armature(context, clip.bones_crc, skeleton_key)
     if armature is None:
@@ -43,6 +45,18 @@ def _import_m2(context, path, data):
     action["redux_frame_total"] = clip.frame_total
     action["redux_position_offset"] = tuple(clip.position_offset)
     action["redux_speed"] = clip.speed
+    action["redux_motion_version"] = int.from_bytes(
+        dict(source_chunks)[0][:4], "little")
+    action["redux_locator_count"] = len(clip.locator_names)
+    extra_curve_count = len(clip.curves) - 3 * len(clip.animated_bones)
+    unsupported = []
+    if extra_curve_count:
+        unsupported.append("locator or transform curves")
+    action["redux_unsupported_motion_data"] = "; ".join(unsupported)
+    optional = b"".join(binary.pack_chunk(ident, payload)
+                        for ident, payload in source_chunks if ident in (6, 7, 8))
+    if optional:
+        action["redux_motion_extra_chunks"] = base64.b64encode(optional).decode("ascii")
     armature.animation_data.action = action
     version.set_action_slot(armature, action)
     context.scene.render.fps = 30

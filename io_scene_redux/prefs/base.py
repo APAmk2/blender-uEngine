@@ -39,6 +39,7 @@ class REDUX_Preferences(bpy.types.AddonPreferences):
     enable_static_export: BoolProperty(name="Static export", default=True, update=_update_menus)
     enable_mesh_export: BoolProperty(name="Skin mesh export", default=True, update=_update_menus)
     enable_skeleton_export: BoolProperty(name="Skeleton export", default=True, update=_update_menus)
+    enable_m2_export: BoolProperty(name="Motion export", default=True, update=_update_menus)
 
     def draw(self, _context):
         from . import ui

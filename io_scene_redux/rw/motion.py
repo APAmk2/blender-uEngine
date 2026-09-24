@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import math
 import struct
 
-from .common import FormatError, Reader, chunks, one
+from .common import FormatError, Reader, chunks, one, pack_chunk
 
 
 @dataclass
@@ -221,3 +221,173 @@ def read_m2(data):
     return Motion(crc, bones_count, start, total, (px, py, pz), speed,
                   animated, tuple(tuple(curves[3*i:3*i+3]) for i in range(len(animated))),
                   tuple(names), tuple(curves))
+
+
+def _curve_bytes(curve, endian):
+    count = len(curve.values)
+    if any(len(value) != curve.dimensions for value in curve.values):
+        raise FormatError(".m2 curve value has the wrong dimension")
+    if any(not math.isfinite(component) for value in curve.values for component in value):
+        raise FormatError(".m2 curve contains a non-finite value")
+    if any(not math.isfinite(time) or time < 0 for time in curve.times):
+        raise FormatError(".m2 curve contains an invalid time")
+    if curve.format == 1:
+        if count != len(curve.times) or not count:
+            raise FormatError("Sampled .m2 curve needs matching times and values")
+        payload = struct.pack(endian + "%df" % count, *curve.times)
+        payload += b"".join(struct.pack(endian + "%df" % curve.dimensions, *value)
+                            for value in curve.values)
+    elif curve.format == 2:
+        if not count:
+            raise FormatError("Constant .m2 curve has no value")
+        payload = b"".join(struct.pack(endian + "%df" % curve.dimensions, *value)
+                            for value in curve.values)
+    elif curve.format == 4:
+        if curve.dimensions != 3 or count != len(curve.times) or not count:
+            raise FormatError("Compressed vector curve needs timed 3D values")
+        inverse_scale, knots = _curve_knots(curve.times)
+        minimum = tuple(min(value[axis] for value in curve.values) for axis in range(3))
+        maximum = tuple(max(value[axis] for value in curve.values) for axis in range(3))
+        scale = tuple((high - low) / 65535.0 if high != low else 1.0
+                      for low, high in zip(minimum, maximum))
+        controls = [tuple(max(0, min(65535, round(
+            (value[axis] - minimum[axis]) / scale[axis]))) for axis in range(3))
+                    for value in curve.values]
+        payload = struct.pack(endian + "f3f3f", inverse_scale, *scale, *minimum)
+        payload += struct.pack(endian + "%dH" % count, *knots)
+        payload += b"".join(struct.pack(endian + "3H", *value)
+                            for value in controls)
+    elif curve.format == 5:
+        if curve.dimensions != 4 or count != len(curve.times) or not count:
+            raise FormatError("Compressed quaternion curve needs timed 4D values")
+        inverse_scale, knots = _curve_knots(curve.times)
+        controls = []
+        factor = 32768.0 * math.sqrt(2.0)
+        for value in curve.values:
+            length = math.sqrt(sum(component * component for component in value))
+            if length <= 1e-20:
+                raise FormatError(".m2 quaternion curve contains a zero quaternion")
+            normalized = tuple(component / length for component in value)
+            omitted = max(range(4), key=lambda index: abs(normalized[index]))
+            stored = [normalized[index] for index in range(4) if index != omitted]
+            words = [max(-32768, min(32767, round(component * factor)))
+                     for component in stored]
+            metadata = (omitted >> 1, omitted & 1,
+                        1 if normalized[omitted] < 0 else 0)
+            words = [((word & 0xffff) & 0xfffe) | bit
+                     for word, bit in zip(words, metadata)]
+            controls.append(tuple(words))
+        payload = struct.pack(endian + "f", inverse_scale)
+        payload += struct.pack(endian + "%dH" % count, *knots)
+        payload += b"".join(struct.pack(endian + "3H", *value)
+                            for value in controls)
+    elif curve.format == 7:
+        if count or curve.times:
+            raise FormatError("Identity .m2 curve contains keys")
+        payload = b""
+    else:
+        raise FormatError("Unsupported .m2 export curve format %d" % curve.format)
+    degree = 2 if curve.format in (4, 5) else 0
+    flags = 1 if curve.dimensions == 4 else 0
+    header = (count | (curve.format << 16) | (degree << 20) |
+              (curve.dimensions << 24) | (flags << 28))
+    result = struct.pack(endian + "I", header) + payload
+    return result + bytes((-len(result)) & 3)
+
+
+def _curve_knots(times):
+    if all(abs(time * 30.0 - round(time * 30.0)) <= 1e-4 and
+           round(time * 30.0) <= 65535 for time in times):
+        inverse_scale = 30.0
+    else:
+        maximum = max(times)
+        inverse_scale = 1.0 if maximum == 0 else 65535.0 / maximum
+    knots = tuple(max(0, min(65535, round(time * inverse_scale))) for time in times)
+    if any(after <= before for before, after in zip(knots, knots[1:])):
+        raise FormatError(".m2 curve times cannot be represented as increasing knots")
+    return inverse_scale, knots
+
+
+def write_m2(clip, version=15, extra_chunks=()):
+    if version not in (15, 16, 17, 18, 19):
+        raise FormatError("Unsupported .m2 export version %d" % version)
+    mask_words = 4 if version == 15 else 8
+    capacity = mask_words * 32
+    if not 0 < clip.bones_count <= 0xffff:
+        raise FormatError("Invalid .m2 skeleton bone count")
+    if not 0 <= clip.frame_start <= 0xffff or not 0 < clip.frame_total <= 0xffff:
+        raise FormatError("Invalid .m2 frame range")
+    if len(clip.animated_bones) != len(clip.bone_curves):
+        raise FormatError(".m2 animated bone and curve counts differ")
+    if tuple(sorted(set(clip.animated_bones))) != tuple(clip.animated_bones):
+        raise FormatError(".m2 animated bone IDs must be unique and sorted")
+    if any(index < 0 or index >= clip.bones_count or index >= capacity
+           for index in clip.animated_bones):
+        raise FormatError("Animated bone exceeds the .m2 mask capacity")
+    if clip.locator_names:
+        raise FormatError("Animated locator export is not supported")
+    if len(clip.position_offset) != 3 or any(
+            not math.isfinite(value) for value in clip.position_offset):
+        raise FormatError("Invalid .m2 position offset")
+    if not math.isfinite(clip.speed):
+        raise FormatError("Invalid .m2 playback speed")
+
+    curves = []
+    for group in clip.bone_curves:
+        if len(group) != 3 or group[0].dimensions != 4 or group[1].dimensions != 3:
+            raise FormatError("Invalid .m2 bone curves")
+        curves.extend(group)
+    header_size = 32 if version == 15 else 48
+    offset_table_size = header_size + 4 * len(curves)
+    big_count = 2 * len(clip.animated_bones) if version == 15 else 0
+    records = [_curve_bytes(curve, ">" if index < big_count else "<")
+               for index, curve in enumerate(curves)]
+    offsets = []
+    cursor = offset_table_size
+    for record in records:
+        offsets.append(cursor)
+        cursor += len(record)
+    words = [0] * mask_words
+    for bone_id in clip.animated_bones:
+        words[bone_id // 32] |= 1 << (bone_id % 32)
+    if version == 15:
+        curve_data = struct.pack(">4I2HI2I", *words, 0, 0, cursor,
+                                 0x3f800000, 0x3f800000)
+        curve_data += b"".join(struct.pack(">I" if index < big_count else "<I", offset)
+                               for index, offset in enumerate(offsets))
+    else:
+        curve_data = struct.pack("<8I2HI2I", *words, 0, 0, cursor,
+                                 0x3f800000, 0x3f800000)
+        curve_data += b"".join(struct.pack("<I", offset) for offset in offsets)
+    curve_data += b"".join(records)
+
+    quality = 0 if version == 15 else 6
+    base_header = struct.pack("<IIHIHH3f", version, clip.bones_crc,
+                              clip.bones_count, quality, clip.frame_start,
+                              clip.frame_total, *clip.position_offset)
+    if version >= 18:
+        base_header += struct.pack("<3f", 0.0, 0.0, 0.0)
+    settings_size = 62 if version == 15 else (98 if version == 19 else 94)
+    settings = bytearray(settings_size)
+    struct.pack_into("<HfffIHH", settings, 0, 0x4000, clip.speed,
+                     20.0, 20.0, clip.frame_total, 0, 0)
+    filter_offset = 22 + (4 if version == 19 else 0)
+    valid_words = []
+    for word_index in range(mask_words):
+        remaining = clip.bones_count - word_index * 32
+        valid_words.append(0xffffffff if remaining >= 32 else
+                           ((1 << max(0, remaining)) - 1))
+    struct.pack_into("<%dI" % mask_words, settings, filter_offset, *valid_words)
+    size_offset = 38 if version == 15 else (58 if version == 19 else 54)
+    struct.pack_into("<II", settings, size_offset, len(curve_data), offset_table_size)
+    struct.pack_into("<%dI" % mask_words, settings, size_offset + 8, *words)
+
+    locator_data = struct.pack("<H", 0)
+    if version >= 17:
+        locator_data += struct.pack("<H", 0)
+    if any(ident not in (6, 7, 8) for ident, _payload in extra_chunks):
+        raise FormatError("Invalid optional .m2 chunk")
+    return (pack_chunk(0, base_header) + pack_chunk(1, bytes(settings)) +
+            pack_chunk(9, curve_data) + pack_chunk(10, locator_data) +
+            b"".join(pack_chunk(ident, payload)
+                     for ident, payload in extra_chunks))

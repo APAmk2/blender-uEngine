@@ -1,5 +1,6 @@
 """Regression checks against documented SDK samples; no Blender installation needed."""
 
+import struct
 import unittest
 from pathlib import Path
 
@@ -314,6 +315,48 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(len(clip.animated_bones), 95)
         rotation = clip.bone_curves[0][0].sample(0.3)
         self.assertAlmostEqual(sum(value * value for value in rotation), 1.0, places=3)
+
+    def test_compiled_motion_writer(self):
+        times = (0.0, 1.0 / 30.0, 2.0 / 30.0)
+        rotation = motion.Curve(5, 4, times, (
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 0.1, 0.0, 0.994987437),
+            (0.0, 0.2, 0.0, 0.979795897)))
+        translation = motion.Curve(4, 3, times, (
+            (0.0, 0.0, 0.0), (1.0, 2.0, 3.0), (2.0, 4.0, 6.0)))
+        scale = motion.Curve(7, 3, (), ())
+        source = motion.Motion(0x12345678, 10, 3, 3, (1.0, 2.0, 3.0),
+                               1.25, (2,), ((rotation, translation, scale),),
+                               (), ())
+        for version in (15, 16, 17, 18, 19):
+            tag_chunk = struct.pack("<If", 1, 0.05) + b"step\0" + struct.pack("<I", 3)
+            encoded = motion.write_m2(source, version, ((7, tag_chunk),))
+            result = motion.read_m2(encoded)
+            self.assertEqual(result.bones_crc, source.bones_crc)
+            self.assertEqual(result.frame_start, 3)
+            self.assertEqual(result.frame_total, 3)
+            self.assertEqual(result.animated_bones, (2,))
+            for actual, expected in zip(result.bone_curves[0][1].values[-1],
+                                        (2.0, 4.0, 6.0)):
+                self.assertAlmostEqual(actual, expected, places=5)
+            for value in result.bone_curves[0][0].values:
+                self.assertAlmostEqual(sum(component * component for component in value),
+                                       1.0, places=4)
+            self.assertEqual(dict(binary.chunks(encoded))[7], tag_chunk)
+            curve_data = dict(binary.chunks(encoded))[9]
+            header_size = 32 if version == 15 else 48
+            offset_endian = ">" if version == 15 else "<"
+            first_offset = struct.unpack_from(offset_endian + "I", curve_data,
+                                              header_size)[0]
+            rotation_header = struct.unpack_from(offset_endian + "I", curve_data,
+                                                 first_offset)[0]
+            second_offset = struct.unpack_from(offset_endian + "I", curve_data,
+                                               header_size + 4)[0]
+            translation_header = struct.unpack_from(offset_endian + "I", curve_data,
+                                                    second_offset)[0]
+            self.assertEqual((rotation_header >> 20) & 15, 2)
+            self.assertEqual((rotation_header >> 28) & 15, 1)
+            self.assertEqual((translation_header >> 20) & 15, 2)
 
     @unittest.skipUnless(M3_CONTENT.exists(), "M3 SDK content is not installed")
     def test_m3_compiled_motion_versions(self):

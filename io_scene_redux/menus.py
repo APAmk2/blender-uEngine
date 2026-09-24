@@ -16,6 +16,7 @@ export_ops = (
     (static_ops.REDUX_OT_export_static, "Redux Static (.static)", "static"),
     (mesh_ops.REDUX_OT_export_mesh, "Redux Skin Mesh (.mesh)", "mesh"),
     (skeleton_ops.REDUX_OT_export_skeleton, "Redux Skeleton (.skeleton)", "skeleton"),
+    (motion_ops.REDUX_OT_export_m2, "Redux Motion (.m2)", "m2"),
 )
 
 

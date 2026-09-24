@@ -64,9 +64,9 @@ class RegistrationTests(unittest.TestCase):
                 self.assertTrue(hasattr(bpy.types.Material, "redux_flag_%04x" % mask))
             self.assertFalse(hasattr(bpy.types.Material, "redux_flag_0080"))
             self.assertFalse(hasattr(bpy.types.Material, "redux_flag_8000"))
-            self.assertEqual(len(registered), 20)
+            self.assertEqual(len(registered), 21)
             self.assertEqual(len(bpy.types.TOPBAR_MT_file_import), 5)
-            self.assertEqual(len(bpy.types.TOPBAR_MT_file_export), 3)
+            self.assertEqual(len(bpy.types.TOPBAR_MT_file_export), 4)
             from io_scene_redux.panels.material import REDUX_OT_dynamic_menu
             selector = REDUX_OT_dynamic_menu()
             selector.prop = "redux_shader"
