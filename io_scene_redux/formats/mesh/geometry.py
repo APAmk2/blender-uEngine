@@ -27,9 +27,9 @@ def _normals_per_vertex(mesh):
     return [normal if normal is not None else Vector(vertex.normal)
             for normal, vertex in zip(result, mesh.vertices)]
 
-def _bind_position(vertex):
+def _bind_position(vertex, scale=12.0):
     """Packed positions are already in model-space bind pose."""
-    return axis.to_blender_vector([x * 12.0 / 32767.0 for x in vertex.offset[:3]])
+    return axis.to_blender_vector([x * scale / 32768.0 for x in vertex.offset[:3]])
 
 
 def _bind_normal(vertex):

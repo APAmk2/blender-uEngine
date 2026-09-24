@@ -9,6 +9,11 @@ from io_scene_redux.utils.formats_io import (ChunkedReader, ChunkedWriter,
 from io_scene_redux.utils import bone, tex
 
 
+M3_CONTENT = Path(r"D:\Archive\m3sdk\content")
+M4_CONTENT = Path(r"D:\Archive\m4_2022\UNPACK\content")
+REDUX_CONTENT = Path(r"D:\Soft\ReduxSDK\content")
+
+
 class UtilityTests(unittest.TestCase):
     def test_original_formats_io_interface(self):
         writer = PackedWriter()
@@ -39,6 +44,43 @@ class UtilityTests(unittest.TestCase):
         self.assertEqual(list(tex.texture_candidates(root, "act\\act_hair"))[:3],
                          [root / "textures" / "act" / ("act_hair" + extension)
                           for extension in (".png", ".tga", ".psd")])
+
+    @unittest.skipUnless(M3_CONTENT.exists(), "M3 SDK content is not installed")
+    def test_m3_compiled_texture_fallback(self):
+        data, source = tex.compiled_texture_dds(M3_CONTENT, "black_invisible")
+        self.assertEqual(source.suffix, ".512")
+        self.assertEqual(data[:4], b"DDS ")
+        self.assertEqual(struct.unpack_from("<2I", data, 12), (512, 512))
+        self.assertEqual(data[84:88], b"DX10")
+        self.assertEqual(struct.unpack_from("<I", data, 128)[0], 99)
+        self.assertEqual(len(data), 148 + 512 * 512)
+        dds_path = tex._compiled_cache_path(source, data)
+        png_path = tex._convert_dds_to_png(M3_CONTENT, dds_path)
+        self.assertIsNotNone(png_path)
+        self.assertEqual(png_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    @unittest.skipUnless(M4_CONTENT.exists(), "M4 2022 content is not installed")
+    def test_m4_compiled_texture_fallback(self):
+        data, source = tex.compiled_texture_dds(M4_CONTENT, "black_invisible")
+        self.assertEqual(source.suffix, ".512")
+        self.assertEqual(data[:4], b"DDS ")
+        self.assertEqual(len(data), 148 + 512 * 512)
+        converter = tex._sdk_texconv(M4_CONTENT)
+        self.assertEqual(converter, Path(tex.__file__).resolve().parent.parent /
+                         "bin" / "texconv.exe")
+        dds_path = tex._compiled_cache_path(source, data)
+        png_path = tex._convert_dds_to_png(M4_CONTENT, dds_path)
+        self.assertIsNotNone(png_path)
+        self.assertEqual(png_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    @unittest.skipUnless(REDUX_CONTENT.exists(), "Redux SDK content is not installed")
+    def test_redux_compiled_texture_fallback(self):
+        data, source = tex.compiled_texture_dds(
+            REDUX_CONTENT, "wpn34\\wpn34_padonocheg_addon")
+        self.assertEqual(source.suffix, ".64")
+        self.assertEqual(data[:4], b"DDS ")
+        self.assertEqual(data[84:88], b"DXT1")
+        self.assertEqual(len(data), 128 + 64 * 64 // 2)
 
     def test_generated_obb_contains_points(self):
         points = [(0, 0, 0), (1, 0, 0), (1, 2, 0), (0, 2, 3)]

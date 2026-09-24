@@ -5,8 +5,9 @@ from ..skeleton.imp import _load_matching_skeleton, _skeleton_key_for_mesh
 from .geometry import _bind_normal, _bind_position
 
 
-def import_data(context, path, data, skeleton_key=None, source_name=None):
-    model = binary.read_mesh(data)
+def import_data(context, path, data, skeleton_key=None, source_name=None,
+                geometry_data=None):
+    model = binary.read_mesh(data, geometry_data)
     if skeleton_key is None:
         skeleton_key = _skeleton_key_for_mesh(context, path, model.bones_crc)
     armature = _active_armature(context, model.bones_crc, skeleton_key)
@@ -16,9 +17,10 @@ def import_data(context, path, data, skeleton_key=None, source_name=None):
     source_text = _store_source(source_name or Path(path).name, data)
     for number, part in enumerate(model.parts):
         obj = _mesh_object(context, path, "%s_%02d" % (Path(path).name, number),
-                           [_bind_position(v) for v in part.vertices],
-                           part.faces, [_bind_normal(v) for v in part.vertices],
-                           [(v.uv[0] / 2048, v.uv[1] / 2048) for v in part.vertices],
+                           [_bind_position(v, part.scale) for v in part.vertices],
+                           part.faces,
+                           [_bind_normal(v) for v in part.vertices],
+                           [v.texcoord() for v in part.vertices],
                            part.material, positions_in_blender=True,
                            normals_in_blender=True, flags_schema="edit_material")
         obj["redux_format"] = "mesh"

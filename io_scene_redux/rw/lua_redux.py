@@ -126,9 +126,9 @@ def read_skeleton_lua(source):
                 values = bytes(int(influence[index + 1]) for index in range(count))
             except (KeyError, ValueError) as exc:
                 raise FormatError("Invalid inline partition influence data") from exc
-        if count != len(values) or count != len(bones):
-            raise FormatError("Partition influence count does not match bones")
-        partitions.append((item["name"], values))
+        if count != len(values) or count < len(bones):
+            raise FormatError("Partition influence count does not cover bones")
+        partitions.append((item["name"], values[:len(bones)]))
     params = [(item["name"], _float(item["b"]), _float(item["e"]),
                _float(item["loop"])) for item in _records(root.get("params"))]
     return Skeleton(bones, int(root.get("crc", 0)), locators, partitions, params,

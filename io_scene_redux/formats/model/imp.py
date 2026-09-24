@@ -2,24 +2,12 @@ from pathlib import Path
 
 import bpy
 
-from ...rw import archive, model as binary
+from ...rw import archive, mesh as mesh_binary, model as binary
 from ...rw.common import FormatError
 from ..common import _content_root
 from ..mesh import imp as mesh_imp
-from ..skeleton.imp import _create_armature
+from ..skeleton.imp import _create_armature, _skeleton_key_for_mesh
 from ..static import imp as static_imp
-
-
-def _resource_path(meshes, key, extension):
-    parts = key.replace("/", "\\").split("\\")
-    if not parts or any(part in ("", ".", "..") or ":" in part for part in parts):
-        raise FormatError("Invalid .model resource key %r" % key)
-    path = meshes.joinpath(*parts)
-    if path.suffix.lower() != extension:
-        path = Path(str(path) + extension)
-    if not path.is_file():
-        raise FormatError("Referenced resource %r was not found" % key)
-    return path
 
 
 def _model_key(path, meshes):
@@ -71,13 +59,19 @@ def import_path(context, path, lod=0):
                 suffix = (".embedded.mesh" if len(embedded_meshes) == 1
                           else ".embedded.%02d.mesh" % index)
                 mesh_imp.import_data(context, path, embedded_mesh,
-                                     skeleton_key, Path(path).stem + suffix)
+                                     skeleton_key, Path(path).stem + suffix,
+                                     descriptor.raw_geometry or None)
         elif descriptor.lods:
             if lod >= len(descriptor.lods) or not descriptor.lods[lod]:
                 raise FormatError(".model has no mesh resources for LOD %d" % lod)
             for key in descriptor.lods[lod]:
-                mesh_path = _resource_path(meshes, key, ".mesh")
-                mesh_imp.import_path(context, str(mesh_path), skeleton_key)
+                mesh_path = binary.resource_path(meshes, path, key, ".mesh")
+                mesh_data = mesh_path.read_bytes()
+                skin = mesh_binary.read_mesh(mesh_data)
+                resource_skeleton = (_skeleton_key_for_mesh(
+                    context, mesh_path, skin.bones_crc) or skeleton_key)
+                mesh_imp.import_data(context, str(mesh_path), mesh_data,
+                                     resource_skeleton)
         else:
             raise FormatError("Dynamic .model has no embedded or referenced mesh geometry")
     created = set(bpy.data.objects) - before

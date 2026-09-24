@@ -15,9 +15,16 @@ class REDUX_Preferences(bpy.types.AddonPreferences):
                                 ("FORMATS", "Formats", "Import and export menus"),
                                 ("DISPLAY", "Display", "Texture loading")),
         default="PATHS")
+    target_sdk: EnumProperty(
+        name="Target SDK",
+        description="SDK whose content directory and model format are being used",
+        items=(("REDUX", "Redux", "Metro 2033 Redux / Last Light Redux SDK"),
+               ("M3", "M3", "Metro Exodus SDK content, model versions through 48"),
+               ("M4_2022", "M4 2022", "2022 M4 editor content, model version 55")),
+        default="REDUX")
     content_root: StringProperty(
         name="SDK content directory", subtype="DIR_PATH",
-        description="Path to ReduxSDK/content; used to find textures and skeletons")
+        description="Path to the selected SDK's content directory; used to find textures, meshes and skeletons")
     auto_skeleton: BoolProperty(name="Load matching skeleton with .mesh", default=True)
     load_textures: BoolProperty(
         name="Load textures", default=True,

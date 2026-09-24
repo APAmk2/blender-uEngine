@@ -9,9 +9,103 @@ from io_scene_redux.rw import (archive, common as binary, model as redux_model,
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTENT = Path(r"D:\Soft\ReduxSDK\content")
+M3_CONTENT = Path(r"D:\Archive\m3sdk\content")
+M4_CONTENT = Path(r"D:\Archive\m4_2022\UNPACK\content")
 
 
 class FormatTests(unittest.TestCase):
+    @unittest.skipUnless(M3_CONTENT.exists(), "M3 SDK content is not installed")
+    def test_m3_skin_versions_and_embedded_skeleton(self):
+        paths = (
+            "meshes/dynamic/hud/hand/exodus/base_glove/export/hud_base_glove_r.mesh",
+            "meshes/dynamic/hud/weapon/wpn_base/wpn_kolya1911/"
+            "kolya1911_mag_big.mesh",
+        )
+        versions = []
+        for relative in paths:
+            value = mesh.read_mesh((M3_CONTENT / relative).read_bytes())
+            versions.append(value.header[0])
+            self.assertTrue(value.parts)
+            self.assertTrue(value.parts[0].vertices[0].influences(
+                value.parts[0].used_bones))
+        self.assertEqual(versions, [46, 48])
+
+        path = (M3_CONTENT / "meshes/dynamic/hud/weapon/m3_dynamo_machine/"
+                "m3_dynamo_machine.model")
+        descriptor = redux_model.read_model(path.read_bytes())
+        self.assertTrue(archive.read_skeleton(descriptor.embedded_skeleton).bones)
+
+        dynamite_path = (M3_CONTENT / "meshes/dynamic/hud/weapon/m3_dynamite/"
+                         "m3_dynamite.model")
+        dynamite = redux_model.read_model(dynamite_path.read_bytes())
+        dynamite_skeleton = archive.read_skeleton(dynamite.embedded_skeleton)
+        self.assertEqual((len(dynamite_skeleton.bones),
+                          len(dynamite_skeleton.partitions[0][1])), (1, 1))
+        self.assertTrue(skeleton.write_skeleton(dynamite_skeleton))
+
+    @unittest.skipUnless(M4_CONTENT.exists(), "M4 2022 content is not installed")
+    def test_m4_2022_mesh_and_model(self):
+        mesh_path = (M4_CONTENT / "meshes/characters/hud/outfit_default/"
+                     "m4_player_default_outfit.mesh")
+        skin = mesh.read_mesh(mesh_path.read_bytes())
+        self.assertEqual(skin.header[0], 51)
+        self.assertTrue(skin.parts[0].vertices[0].direct_bones)
+        self.assertTrue(skin.parts[0].vertices[0].influences(
+            skin.parts[0].used_bones))
+
+        model_path = (M4_CONTENT / "meshes/characters/hud/armor/armor_medium/"
+                      "body_armour_medium_b2b_test.model")
+        descriptor = redux_model.read_model(model_path.read_bytes())
+        self.assertEqual((descriptor.version, descriptor.model_type), (55, 3))
+        embedded = mesh.read_mesh(descriptor.embedded_mesh,
+                                  descriptor.raw_geometry)
+        self.assertTrue(embedded.parts[0].faces)
+        self.assertEqual(len(archive.read_skeleton(
+            descriptor.embedded_skeleton).bones), 67)
+
+        referenced_path = (M4_CONTENT / "meshes/characters/hud/_base/"
+                           "m4_player.model")
+        referenced = redux_model.read_model(referenced_path.read_bytes())
+        self.assertEqual(referenced.lods[0],
+                         [".\\test_body", ".\\test_boots", ".\\test_pants"])
+        resolved = [redux_model.resource_path(M4_CONTENT / "meshes",
+                                               referenced_path, key, ".mesh")
+                    for key in referenced.lods[0]]
+        self.assertEqual([path.name for path in resolved],
+                         ["test_body.mesh", "test_boots.mesh", "test_pants.mesh"])
+        referenced_skeleton = lua.read_skeleton_lua(
+            referenced_path.with_suffix(".skeleton.lua").read_text(encoding="utf-8"))
+        self.assertEqual(len(referenced_skeleton.bones), 67)
+        self.assertTrue(all(len(mask) == 67
+                            for _name, mask in referenced_skeleton.partitions))
+        for path in resolved:
+            skin = mesh.read_mesh(path.read_bytes())
+            self.assertEqual(skin.bones_crc, referenced_skeleton.crc)
+
+        recon_path = (M4_CONTENT / "meshes/characters/man/nazis/nazi_light/"
+                      "nazi_light_recon.model")
+        recon = redux_model.read_model(recon_path.read_bytes())
+        jacket_path = redux_model.resource_path(
+            M4_CONTENT / "meshes", recon_path, recon.lods[0][0], ".mesh")
+        jacket = mesh.read_mesh(jacket_path.read_bytes())
+        self.assertNotEqual(jacket.bones_crc, referenced_skeleton.crc)
+        jacket_model = redux_model.read_model(
+            jacket_path.with_suffix(".model").read_bytes())
+        jacket_skeleton_path = (M4_CONTENT / "meshes").joinpath(
+            *jacket_model.skeleton_key.split("\\"))
+        jacket_skeleton = lua.read_skeleton_lua(
+            Path(str(jacket_skeleton_path) + ".skeleton.lua").read_text(
+                encoding="utf-8"))
+        self.assertEqual(jacket.bones_crc, jacket_skeleton.crc)
+
+    @unittest.skipUnless(M4_CONTENT.exists(), "M4 2022 content is not installed")
+    def test_m4_2022_static_model(self):
+        path = M4_CONTENT / "meshes/static/spec_test.model"
+        descriptor = redux_model.read_model(path.read_bytes())
+        geometry = static.read_static(path.read_bytes(), expected_type=1)
+        self.assertEqual((descriptor.version, descriptor.model_type), (55, 1))
+        self.assertTrue(geometry.parts[0].vertices)
+
     @unittest.skipUnless(CONTENT.exists(), "Redux SDK content is not installed")
     def test_version_8_static_round_trip(self):
         path = CONTENT / "maps/2033/l01_hunter/source/sec2.static"
@@ -220,6 +314,30 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(len(clip.animated_bones), 95)
         rotation = clip.bone_curves[0][0].sample(0.3)
         self.assertAlmostEqual(sum(value * value for value in rotation), 1.0, places=3)
+
+    @unittest.skipUnless(M3_CONTENT.exists(), "M3 SDK content is not installed")
+    def test_m3_compiled_motion_versions(self):
+        root = M3_CONTENT / "motions/hud/weapon/m3_dynamo_machine"
+        version_18 = motion.read_m2((root / "charger_pump.m2").read_bytes())
+        version_19 = motion.read_m2(
+            (root / "charger_idle_motorboat.m2").read_bytes())
+        self.assertEqual((version_18.bones_count, version_18.frame_total), (43, 13))
+        self.assertEqual(len(version_18.animated_bones), 4)
+        self.assertEqual(len(version_18.locator_names), 2)
+        self.assertEqual((version_19.bones_count, version_19.frame_total), (43, 386))
+        self.assertTrue(version_19.bone_curves)
+
+        version_16 = motion.read_m2((M3_CONTENT / "motions/object/tackle/"
+                                     "fishing_rod_natyajka_left_0.m2").read_bytes())
+        version_17 = motion.read_m2((M3_CONTENT / "motions/victoria/tower/"
+                                     "tower7_08_02_4.m2").read_bytes())
+        self.assertEqual((version_16.bones_count, version_16.frame_total), (12, 134))
+        self.assertEqual((version_17.bones_count, version_17.frame_total), (190, 431))
+        self.assertEqual(version_17.locator_names, ("loc_righthand",))
+
+        references = motion.read_m2((M3_CONTENT / "motions/hud/weapon/wpn_base/"
+                                     "06_bridge_tt_tihar_take_player_start.m2").read_bytes())
+        self.assertEqual(references.locator_names, ("loc_wpn_base",))
 
 
 if __name__ == "__main__":

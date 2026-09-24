@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import bpy
 from mathutils import Matrix, Quaternion, Vector
-from ...rw import skeleton as binary, lua_redux as lua
+from ...rw import model as model_binary, skeleton as binary, lua_redux as lua
 from ...utils.formats_io import ChunkedReader, Reader
 from ...utils import axis, ie, version
 from ..common import _active_armature, _content_root
@@ -101,26 +101,23 @@ def _skeleton_key_from_parent_models(source_path, meshes):
     source = Path(source_path)
     if not source.is_relative_to(meshes):
         return None
-    mesh_key = source.relative_to(meshes).with_suffix("").as_posix().replace("/", "\\").lower()
     keys = set()
     for model_path in source.parent.glob("*.model"):
-        chunks = list(ChunkedReader(model_path.read_bytes()))
-        payloads = dict(chunks)
-        if 16 not in payloads or 20 not in payloads:
+        try:
+            descriptor = model_binary.read_model(model_path.read_bytes())
+        except binary.FormatError:
             continue
-        reader = Reader(payloads[16])
-        count = reader.unpack("<I")[0]
-        if count > 256:
+        if not descriptor.skeleton_key:
             continue
-        references = []
-        for _ in range(count):
-            references.extend(item.strip().replace("/", "\\").lower()
-                              for item in reader.stringz().split(","))
-        reader.done()
-        if mesh_key in references:
-            key = _model_skeleton_key(chunks)
-            if key:
-                keys.add(key.lower())
+        for lod in descriptor.lods:
+            for resource in lod:
+                try:
+                    referenced = model_binary.resource_path(
+                        meshes, model_path, resource, ".mesh")
+                except binary.FormatError:
+                    continue
+                if referenced == source.resolve():
+                    keys.add(descriptor.skeleton_key.lower())
     if len(keys) > 1:
         raise binary.FormatError("Nearby .model files name different skeletons for this .mesh")
     return next(iter(keys), None)

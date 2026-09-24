@@ -3,6 +3,7 @@ def draw(layout, prefs):
     layout.row().prop(prefs, "category", expand=True)
     column = layout.column(align=True)
     if prefs.category == "PATHS":
+        column.prop(prefs, "target_sdk")
         column.prop(prefs, "content_root")
         column.prop(prefs, "auto_skeleton")
     elif prefs.category == "FORMATS":

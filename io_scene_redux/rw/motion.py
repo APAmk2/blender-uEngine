@@ -1,4 +1,4 @@
-"""Redux SDK compiled .m2 motion reader (format version 15).
+"""4A Engine compiled .m2 motion reader.
 
 The mixed-endian curve layout is described in MetroFormats/ANIMATION.md.
 This module has no Blender dependency.
@@ -130,43 +130,82 @@ def _read_curve(payload, offset, next_offset, endian):
 def read_m2(data):
     top = chunks(data)
     header = one(top, 0)
-    if len(header) != 30:
-        raise FormatError("Expected version 15 .m2 header")
-    version, crc, bones_count, quality, start, total, px, py, pz = struct.unpack(
-        "<IIHIHH3f", header)
-    if version != 15:
+    if len(header) < 4:
+        raise FormatError("Truncated .m2 header")
+    version = struct.unpack_from("<I", header)[0]
+    if version == 15:
+        if len(header) != 30:
+            raise FormatError("Expected version 15 .m2 header")
+        version, crc, bones_count, quality, start, total, px, py, pz = struct.unpack(
+            "<IIHIHH3f", header)
+        mask_words = 4
+        curve_header_size = 32
+        curve_endian = None
+        settings_size = 62
+        data_size_offset = 38
+        has_locator_references = False
+    elif version in (16, 17):
+        if len(header) != 30:
+            raise FormatError("Expected version %d .m2 header" % version)
+        version, crc, bones_count, quality, start, total, px, py, pz = struct.unpack(
+            "<IIHIHH3f", header)
+        mask_words = 8
+        curve_header_size = 48
+        curve_endian = "<"
+        settings_size = 94
+        data_size_offset = 54
+        has_locator_references = version >= 17
+    elif version in (18, 19):
+        if len(header) != 42:
+            raise FormatError("Expected version %d .m2 header" % version)
+        values = struct.unpack("<IIHIHH6f", header)
+        _version, crc, bones_count, quality, start, total = values[:6]
+        px, py, pz = values[6:9]
+        mask_words = 8
+        curve_header_size = 48
+        curve_endian = "<"
+        settings_size = 94 if version == 18 else 98
+        data_size_offset = 54 if version == 18 else 58
+        has_locator_references = True
+    else:
         raise FormatError("Unsupported .m2 version %d" % version)
     settings = one(top, 1)
-    if len(settings) != 62:
-        raise FormatError("Expected version 15 .m2 settings")
+    if len(settings) != settings_size:
+        raise FormatError("Expected version %d .m2 settings" % version)
     speed = struct.unpack_from("<f", settings, 2)[0]
-    data_size, offsets_size = struct.unpack_from("<II", settings, 38)
+    data_size, offsets_size = struct.unpack_from("<II", settings, data_size_offset)
     payload = one(top, 9)
     if data_size != len(payload):
         raise FormatError(".m2 data size mismatch")
-    if len(payload) < 32:
+    if len(payload) < curve_header_size:
         raise FormatError("Truncated .m2 curve header")
-    words = struct.unpack_from(">4I", payload)
+    mask_endian = ">" if version == 15 else "<"
+    words = struct.unpack_from(mask_endian + "%dI" % mask_words, payload)
     animated = tuple(i for i in range(bones_count)
-                     if i < 128 and (words[i // 32] >> (i % 32)) & 1)
+                     if i < mask_words * 32 and (words[i // 32] >> (i % 32)) & 1)
     if sum(word.bit_count() for word in words) != len(animated):
         raise FormatError("Animated bone bit exceeds skeleton bone count")
-    locator_count, transform_present = struct.unpack_from(">2H", payload, 16)
-    expected_size = struct.unpack_from(">I", payload, 20)[0]
+    metadata_offset = mask_words * 4
+    locator_count, transform_present = struct.unpack_from(
+        mask_endian + "2H", payload, metadata_offset)
+    expected_size = struct.unpack_from(mask_endian + "I", payload,
+                                       metadata_offset + 4)[0]
     if expected_size != len(payload):
         raise FormatError(".m2 curve header size mismatch")
     count = 3 * len(animated) + 4 * locator_count + 3 * bool(transform_present)
     big_count = 2 * len(animated) + 3 * locator_count + 2 * bool(transform_present)
-    if offsets_size != 32 + 4 * count:
+    if offsets_size != curve_header_size + 4 * count:
         raise FormatError(".m2 curve offset table size mismatch")
-    offsets = [struct.unpack_from((">" if i < big_count else "<") + "I",
-                                  payload, 32 + 4 * i)[0] for i in range(count)]
+    offsets = [struct.unpack_from(
+        (curve_endian or (">" if i < big_count else "<")) + "I",
+        payload, curve_header_size + 4 * i)[0] for i in range(count)]
     if offsets and offsets[0] != offsets_size:
         raise FormatError(".m2 curve table does not meet curve data")
     curves = []
     for i, offset in enumerate(offsets):
         end = offsets[i + 1] if i + 1 < len(offsets) else len(payload)
-        curves.append(_read_curve(payload, offset, end, ">" if i < big_count else "<"))
+        endian = curve_endian or (">" if i < big_count else "<")
+        curves.append(_read_curve(payload, offset, end, endian))
     locators = Reader(one(top, 10))
     names = []
     if locators.unpack("<H")[0] != locator_count:
@@ -174,6 +213,10 @@ def read_m2(data):
     for _ in range(locator_count):
         names.append(locators.stringz())
         locators.read(1)  # flags
+    if has_locator_references:
+        reference_count = locators.unpack("<H")[0]
+        for _ in range(reference_count):
+            locators.stringz()
     locators.done()
     return Motion(crc, bones_count, start, total, (px, py, pz), speed,
                   animated, tuple(tuple(curves[3*i:3*i+3]) for i in range(len(animated))),
