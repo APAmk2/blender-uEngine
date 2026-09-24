@@ -20,8 +20,8 @@ class REDUX_Preferences(bpy.types.AddonPreferences):
         description="Path to ReduxSDK/content; used to find textures and skeletons")
     auto_skeleton: BoolProperty(name="Load matching skeleton with .mesh", default=True)
     load_textures: BoolProperty(
-        name="Load source textures", default=True,
-        description="Create image texture nodes from source images in content/textures")
+        name="Load textures", default=True,
+        description="Load source images, falling back to compiled engine texture tiers")
     compact_menus: BoolProperty(name="Compact import/export menus", default=False,
                                 update=_update_menus)
     enable_static_import: BoolProperty(name="Static import", default=True, update=_update_menus)

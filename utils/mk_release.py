@@ -20,6 +20,8 @@ def get_files_list():
 
     file_list.append(('LICENSE', 'io_scene_redux/LICENSE'))
     file_list.append('io_scene_redux/metro.png')
+    file_list.append('io_scene_redux/bin/texconv.exe')
+    file_list.append('io_scene_redux/bin/DirectXTex-LICENSE.txt')
 
     for root, dirs, files in os.walk('io_scene_redux'):
         for file in files:
