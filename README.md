@@ -8,7 +8,7 @@
 | .mesh         | Skinned mesh          | Yes        | Yes         |
 | .skeleton     | Skeleton container    | Yes        | Yes         |
 | .skeleton.lua | Skeleton, but in .lua | Yes        | As .skeleton|
-| .m2           | Skeletal actions      | Yes        | No          |
+| .m2           | Skeletal actions      | Yes        | Yes         |
 | .model        | Configured models     | Yes        | No          |
 
 ## License
