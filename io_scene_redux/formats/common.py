@@ -1,4 +1,5 @@
 import base64
+from array import array
 from pathlib import Path
 import bpy
 from ..rw import common as binary
@@ -57,7 +58,7 @@ def _mat_record(mat, default_name):
 
 def _mesh_object(context, source_path, name, positions, faces, normals, uvs, material,
                  positions_in_blender=False, normals_in_blender=False,
-                 flags_schema=None):
+                 flags_schema=None, corner_records=None):
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata((positions if positions_in_blender else
                       [axis.to_blender_vector(p) for p in positions]), [], faces)
@@ -69,19 +70,21 @@ def _mesh_object(context, source_path, name, positions, faces, normals, uvs, mat
                                     flags_schema))
     mesh.materials[0]["redux_part_name"] = material.name
     uv_layer = mesh.uv_layers.new(name="Redux UV")
+    loop_normals = [None] * len(mesh.loops)
     for poly in mesh.polygons:
         poly.use_smooth = True
         for loop_index in poly.loop_indices:
             loop = mesh.loops[loop_index]
-            i = loop.vertex_index
+            i = (corner_records[loop_index] if corner_records is not None else
+                 loop.vertex_index)
             uv_layer.data[loop_index].uv = (uvs[i][0], 1.0 - uvs[i][1])
+            loop_normals[loop_index] = (normals[i] if normals_in_blender else
+                                        axis.to_blender_vector(normals[i]))
     # Set custom split normals only after mesh topology exists.
-    if hasattr(mesh, "normals_split_custom_set_from_vertices"):
+    if hasattr(mesh, "normals_split_custom_set"):
         if hasattr(mesh, "use_auto_smooth"):
             mesh.use_auto_smooth = True
-        mesh.normals_split_custom_set_from_vertices(
-            (normals if normals_in_blender else
-             [axis.to_blender_vector(n) for n in normals]))
+        mesh.normals_split_custom_set(loop_normals)
     return obj
 
 def _store_source(name, data):
@@ -139,13 +142,29 @@ def _triangles(mesh):
     mesh.calc_loop_triangles()
     return [tuple(tri.vertices) for tri in mesh.loop_triangles]
 
+def _active_uv_values(mesh):
+    layer = mesh.uv_layers.active
+    if layer is None or len(layer.data) != len(mesh.loops):
+        return None
+    flat = array("f", [0.0]) * (len(mesh.loops) * 2)
+    try:
+        layer.data.foreach_get("uv", flat)
+        return [(flat[index * 2], flat[index * 2 + 1])
+                for index in range(len(mesh.loops))]
+    except (AttributeError, IndexError, RuntimeError):
+        try:
+            return [(item.uv.x, item.uv.y) for item in layer.data]
+        except (IndexError, RuntimeError):
+            return None
+
 def _uv_per_vertex(mesh):
     result = [(0.0, 0.0)] * len(mesh.vertices)
-    if mesh.uv_layers.active:
+    values = _active_uv_values(mesh)
+    if values is not None:
         seen = {}
         for loop in mesh.loops:
-            uv = mesh.uv_layers.active.data[loop.index].uv
-            value = (uv.x, 1.0 - uv.y)
+            uv = values[loop.index]
+            value = (uv[0], 1.0 - uv[1])
             prior = seen.get(loop.vertex_index)
             if prior is not None and any(abs(a - b) > 1e-5 for a, b in zip(prior, value)):
                 raise binary.FormatError("Skin UV seam needs a split vertex; vertex count is fixed")
