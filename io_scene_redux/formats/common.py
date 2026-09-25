@@ -46,9 +46,32 @@ def _material(context, source_path, name, record, flags_schema=None):
         mat["redux_texture_status"] = "Loading disabled in add-on preferences"
     return mat
 
+def _texture_name(mat):
+    if mat is None:
+        return ""
+    value = mat.get("redux_texture", "")
+    if value:
+        return value
+    candidates = [mat.get("redux_texture_file", "")]
+    if mat.use_nodes and mat.node_tree:
+        candidates.extend(
+            node.image.filepath for node in mat.node_tree.nodes
+            if node.type == "TEX_IMAGE" and node.image and node.image.filepath)
+    for value in candidates:
+        if not value:
+            continue
+        path = Path(bpy.path.abspath(value))
+        parts = path.parts
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index].lower() == "textures" and index + 1 < len(parts):
+                relative = Path(*parts[index + 1:]).with_suffix("")
+                return str(relative).replace("/", "\\")
+    return ""
+
+
 def _mat_record(mat, default_name):
     return binary.Material(
-        mat.get("redux_texture", "") if mat else "",
+        _texture_name(mat),
         mat.get("redux_shader", "geometry\\default") if mat else "geometry\\default",
         mat.get("redux_game_material", "default") if mat else "default",
         mat.get("redux_part_name", default_name) if mat else default_name,

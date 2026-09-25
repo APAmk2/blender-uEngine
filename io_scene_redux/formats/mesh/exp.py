@@ -1,4 +1,6 @@
 import math
+import struct
+import zlib
 from array import array
 
 from mathutils import Vector
@@ -111,6 +113,73 @@ def _mark_open_edges(vertices, faces):
         vertices[index].tangent |= 0xff000000
 
 
+def _new_header(version, model_type):
+    result = bytearray(64)
+    struct.pack_into("<BBH", result, 0, version, model_type, 0xffff)
+    return bytes(result)
+
+
+def _header_crc(header, value):
+    result = bytearray(header)
+    struct.pack_into("<I", result, 0x2c, value & 0xffffffff)
+    return bytes(result)
+
+
+def _new_part_crc(part, number):
+    data = bytearray(struct.pack("<I", number))
+    for value in (part.material.texture, part.material.shader,
+                  part.material.game_material, part.material.name):
+        data += value.encode("utf-8", "surrogateescape") + b"\0"
+    data += struct.pack("<H", part.material.flags)
+    data += bytes(part.used_bones)
+    data += part.bone_boxes
+    for vertex in part.vertices:
+        data += struct.pack("<4h5I2h", *vertex.offset, vertex.normal,
+                            vertex.tangent, vertex.binormal, vertex.bones,
+                            vertex.weights, *vertex.uv)
+    for face in part.faces + part.shadow_faces:
+        data += struct.pack("<3H", *face)
+    value = zlib.crc32(data) & 0xffffffff
+    return value or 1
+
+
+def _new_part(obj):
+    dummy = binary.SkinVertex((0, 0, 0, 1), 0, 0, 0, 0, 0,
+                              (0, 0), False, False)
+    return binary.SkinPart(
+        binary.Material(name=obj.name), [], b"", [dummy], [], [],
+        _new_header(23, 5), [], 12.0)
+
+
+def _armature_crc(armature):
+    try:
+        value = armature["redux_bones_crc"]
+        return (int(value, 16) if isinstance(value, str) else int(value)) & 0xffffffff
+    except (KeyError, TypeError, ValueError) as exc:
+        raise binary.FormatError(
+            "Mesh armature has no valid Redux skeleton CRC") from exc
+
+
+def _bone_local_points(vertices, used_bones, bones, bone_id, scale):
+    bone = bones.get(bone_id)
+    if bone is None:
+        raise binary.FormatError(
+            "Skin uses bone index %d missing from the selected armature" %
+            bone_id)
+    inverse_bind = bone.matrix_local.inverted_safe()
+    points = []
+    for vertex in vertices:
+        if not any(index == bone_id for index, _weight
+                   in vertex.influences(used_bones)):
+            continue
+        redux_point = Vector(tuple(
+            component * scale / 32768 for component in vertex.offset[:3]))
+        blender_point = axis.to_blender_vector(redux_point)
+        local_point = inverse_bind @ blender_point
+        points.append(tuple(axis.to_redux_vector(local_point)))
+    return points
+
+
 def _rebuild_topology(obj, mesh, old, bones):
     if not old.vertices or old.vertices[0].modern or old.auxiliary or old.lods:
         raise binary.FormatError(
@@ -157,10 +226,14 @@ def _rebuild_topology(obj, mesh, old, bones):
             if not _finite_vector(point):
                 raise binary.FormatError(
                     "Skin vertex %d has a non-finite position" % source.index)
-            raw_point = tuple(
-                max(-32768, min(32767,
-                    round(component * 32768 / old.scale)))
-                for component in point)
+            scaled_point = tuple(component * 32768 / old.scale
+                                 for component in point)
+            if any(component < -32768 or component > 32767
+                   for component in scaled_point):
+                raise binary.FormatError(
+                    "Skin vertex %d is outside the packed position range" %
+                    source.index)
+            raw_point = tuple(round(component) for component in scaled_point)
 
             uv = uv_values[loop_index]
             uv = (uv[0], 1.0 - uv[1])
@@ -272,32 +345,58 @@ def _source_topology(obj, mesh, old, armature, bones):
 def _export_mesh(context, recompute_bone_boxes=False):
     objects = _selected_meshes(context)
     source = objects[0].get("redux_source_text")
-    if not source or any(
+    imported = bool(source)
+    if imported and any(
             obj.get("redux_source_text") != source or
             obj.get("redux_format") != "mesh" for obj in objects):
         raise binary.FormatError(
             "Mesh export requires parts imported from the same Redux .mesh")
-    original = binary.read_mesh(_source_bytes(objects[0]))
+    if not imported and any(obj.get("redux_source_text") for obj in objects):
+        raise binary.FormatError("Do not mix imported and new mesh parts")
+    if not imported:
+        addon = context.preferences.addons.get("io_scene_redux")
+        target = addon.preferences.target_sdk if addon else "REDUX"
+        if target != "REDUX":
+            raise binary.FormatError(
+                "New skin mesh export currently supports the Redux target only")
+    original = binary.read_mesh(_source_bytes(objects[0])) if imported else None
     parts = []
+    bones_crc = original.bones_crc if original else None
     for obj in objects:
-        if obj.get("redux_axis_basis") != axis.BASIS_ID:
+        if imported and obj.get("redux_axis_basis") != axis.BASIS_ID:
             raise binary.FormatError(
                 "Reimport this mesh with the current Redux axis conversion")
-        number = int(obj.get("redux_part", -1))
-        if not 0 <= number < len(original.parts):
-            raise binary.FormatError("Invalid imported part number")
-        old = original.parts[number]
+        if imported:
+            number = int(obj.get("redux_part", -1))
+            if not 0 <= number < len(original.parts):
+                raise binary.FormatError("Invalid imported part number")
+            old = original.parts[number]
+        else:
+            old = _new_part(obj)
         if getattr(obj, "mode", "OBJECT") == "EDIT" and hasattr(obj, "update_from_editmode"):
             obj.update_from_editmode()
         mesh = obj.data
+        if not imported and len(mesh.materials) > 1:
+            raise binary.FormatError(
+                "New skin mesh parts must use one material per Blender object")
         armature = next((modifier.object for modifier in obj.modifiers
                          if modifier.type == "ARMATURE" and modifier.object),
                         None)
+        if not imported and armature is None:
+            raise binary.FormatError(
+                "New skin mesh export requires a Redux armature modifier")
         if armature and armature.get("redux_axis_basis") != axis.BASIS_ID:
             raise binary.FormatError(
                 "Reimport the mesh's armature with the current Redux axis conversion")
+        if armature:
+            current_crc = _armature_crc(armature)
+            if bones_crc is None:
+                bones_crc = current_crc
+            elif current_crc != bones_crc:
+                raise binary.FormatError(
+                    "Selected mesh parts use armatures with different skeleton CRCs")
         bones = _bones_by_index(armature) if armature else {}
-        rebuild = bool(obj.get("redux_rebuild_vertices"))
+        rebuild = not imported or bool(obj.get("redux_rebuild_vertices"))
         if rebuild:
             vertices, faces, used_bones = _rebuild_topology(
                 obj, mesh, old, bones)
@@ -307,6 +406,11 @@ def _export_mesh(context, recompute_bone_boxes=False):
 
         material = mesh.materials[0] if mesh.materials else None
         record = _mat_record(material, old.material.name)
+        if not imported and not record.texture:
+            raise binary.FormatError(
+                "Material %r has no Redux texture; set Texture in Redux SDK "
+                "Material or assign an image below the SDK content\\textures folder" %
+                (material.name if material else obj.name))
         part_header = binary.bounds_header(
             [tuple(component * old.scale / 32768
                    for component in vertex.offset[:3])
@@ -316,26 +420,29 @@ def _export_mesh(context, recompute_bone_boxes=False):
         if recompute_bone_boxes or used_bones != old.used_bones:
             generated = bytearray()
             for bone_id in used_bones:
-                points = [
-                    tuple(component * old.scale / 32768
-                          for component in vertex.offset[:3])
-                    for vertex in vertices
-                    if any(index == bone_id for index, _weight
-                           in vertex.influences(used_bones))]
+                points = _bone_local_points(
+                    vertices, used_bones, bones, bone_id, old.scale)
                 generated += bone_utils.generate_obb(points)
             boxes = bytes(generated)
-        shadow_faces = [] if rebuild else old.shadow_faces
-        parts.append(binary.SkinPart(
+        shadow_faces = list(faces) if rebuild else old.shadow_faces
+        part = binary.SkinPart(
             record, used_bones, boxes, vertices, faces,
             shadow_faces, part_header, old.extra, old.scale,
-            old.auxiliary, old.lods, old.selected_lod))
+            old.auxiliary, old.lods, old.selected_lod)
+        if not imported:
+            part.header = _header_crc(
+                part.header, _new_part_crc(part, len(parts)))
+        parts.append(part)
     positions = [
         tuple(component * part.scale / 32768
               for component in vertex.offset[:3])
         for part in parts for vertex in part.vertices]
-    outer_header = binary.bounds_header(positions, 4, original.header)
+    outer_header = binary.bounds_header(
+        positions, 4, original.header if original else _new_header(23, 4))
+    extra = original.extra if original else [
+        (36, b"\x03\x01\x01\x01\x02\x40\x00\x00")]
     return binary.write_mesh(binary.SkinModel(
-        parts, original.bones_crc, outer_header, original.extra))
+        parts, bones_crc, outer_header, extra))
 
 
 export_data = _export_mesh
