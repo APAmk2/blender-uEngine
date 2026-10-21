@@ -144,14 +144,7 @@ def read_static(data, expected_type=10, versions=None):
             for _ in range(count):
                 if expected_type == 1:
                     v = r.unpack("<3f3I2f")
-                    packed = v[3]
-                    signed = tuple(((packed >> shift) & 255) - 256
-                                   if (packed >> shift) & 128 else (packed >> shift) & 255
-                                   for shift in (0, 8, 16))
-                    normal = tuple(value / 127.0 for value in signed)
-                    length = math.sqrt(sum(value * value for value in normal)) or 1.0
-                    vertices.append((v[:3], tuple(value / length for value in normal),
-                                     v[6:8], v[5]))
+                    vertices.append((v[:3], _normal(v[3]), v[6:8], v[5]))
                 elif version in (8, 16):
                     v = r.unpack("<3f3f3f3f2f")
                     vertices.append((v[:3], v[3:6], v[12:14], 0xffffffff))
